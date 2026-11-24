@@ -530,20 +530,53 @@ class GatewayConfigLoadersMixin:
         return name or None
 
     def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
-        """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
+        """Busy mode for ``source`` (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``).
+
+        Read live from the profile's config.yaml (the loader is cached on the file's signature), so a
+        ``display.busy_input_mode`` edit applies to the next message without a gateway restart. The
+        startup snapshot is only the fallback when the file has no value or cannot be read."""
         fallback = getattr(self, attr, "interrupt")
         profile_name = self._busy_profile_name_for_source(source)
-        if not profile_name:
-            return fallback
-        modes = getattr(self, attr + "s_by_profile", None)
-        return modes.get(profile_name, fallback) if isinstance(modes, dict) else fallback
+        if profile_name:
+            modes = getattr(self, attr + "s_by_profile", None)
+            if isinstance(modes, dict):
+                fallback = modes.get(profile_name, fallback)
+        live = self._live_busy_modes(profile_name, attr, fallback)
+        return live if live is not None else fallback
+
+    def _live_busy_modes(self, profile_name: Optional[str], attr: str, fallback: str) -> Optional[str]:
+        """Busy mode re-read from config.yaml now, or ``None`` to keep ``fallback``.
+
+        A routed profile reads its own file (its snapshot never consulted env either). The gateway's own
+        profile keeps the documented env-first order, but only for a value the operator set: the bridge's
+        startup copy of config.yaml is ignored so the edited file wins."""
+        from gateway.run import _load_gateway_config, env_override
+        try:
+            if profile_name:
+                from hermes_cli.profiles import get_profile_dir
+                config = _load_gateway_config(get_profile_dir(profile_name) / "config.yaml")
+            else:
+                if (env_override("HERMES_GATEWAY_BUSY_INPUT_MODE")
+                        or (attr == "_busy_text_mode" and env_override("HERMES_GATEWAY_BUSY_TEXT_MODE"))):
+                    return None
+                config = _load_gateway_config()
+        except Exception:
+            logger.debug("Live busy-mode read failed for profile %r", profile_name, exc_info=True)
+            return None
+        if not cfg_get(config, "display", "busy_input_mode", default="") and not cfg_get(
+                config, "display", "busy_text_mode", default=""):
+            return None
+        input_mode, text_mode = self._busy_modes_from_config(
+            config, fallback_input=fallback if attr == "_busy_input_mode" else "interrupt",
+            fallback_text=fallback if attr == "_busy_text_mode" else "interrupt")
+        return input_mode if attr == "_busy_input_mode" else text_mode
 
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
-        """Resolve busy input mode from the routed profile startup snapshot."""
+        """Resolve busy input mode, live from config.yaml (see ``_effective_busy_mode``)."""
         return self._effective_busy_mode(source, "_busy_input_mode")
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
-        """Resolve legacy busy text mode from the routed profile snapshot."""
+        """Resolve legacy busy text mode, live from config.yaml (see ``_effective_busy_mode``)."""
         return self._effective_busy_mode(source, "_busy_text_mode")
 
     @staticmethod

@@ -1936,12 +1936,27 @@ _DISPLAY_ENV_BRIDGE = {
     "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
 
 
+# env var -> the value the config bridge itself wrote. Lets live readers tell a startup copy of
+# config.yaml (stale once the file changes) from a value the operator really set in the environment.
+_BRIDGED_ENV_VALUES: dict[str, str] = {}
+
+
 def _bridge_section_to_env(section: Any, mapping: dict[str, str]) -> None:
     """Export every present ``mapping`` key of a config section as ``str(value)``."""
     if isinstance(section, dict):
         for cfg_key, env_var in mapping.items():
             if cfg_key in section:
-                os.environ[env_var] = str(section[cfg_key])
+                os.environ[env_var] = _BRIDGED_ENV_VALUES[env_var] = str(section[cfg_key])
+
+
+def env_override(env_var: str) -> str:
+    """The stripped env value only when the operator set it, not when it is the config bridge's own
+    startup copy of config.yaml ("" otherwise). Live config readers use this so an edited config.yaml
+    wins over the frozen copy while a real env override still wins over config."""
+    value = os.getenv(env_var, "")
+    if value and _BRIDGED_ENV_VALUES.get(env_var) == value:
+        return ""
+    return value.strip()
 
 
 def _bridge_max_turns_to_env(agent_cfg: Any) -> None:
